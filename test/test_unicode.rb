@@ -29,19 +29,58 @@ context "Unicode Support" do
     assert_equal "# 한글", utf8(page.raw_data)
 
     # markup.rb
-    # #简介
-    # href.gsub('%', '%25') so the anchor works in Firefox.
-    # <a href="#%25ED%2595%259C%25EA%25B8%2580" id="%ED%95%9C%EA%B8%80" class="anchor"></a>
     doc     = Nokogiri::HTML page.formatted_data
     h1s     = doc / :h1
     h1      = h1s.first
     anchors = h1 / :a
     assert_equal 1, h1s.size
     assert_equal 1, anchors.size
-    assert_equal '#%25ED%2595%259C%25EA%25B8%2580', anchors[0]['href']
-    assert_equal '%ED%95%9C%EA%B8%80',              anchors[0]['id']
-    assert_equal 'anchor',                          anchors[0]['class']
-    assert_equal '',                                anchors[0].text
+    assert_equal '#한글',  anchors[0]['href']
+    assert_equal  '한글',  anchors[0]['id']
+    assert_equal 'anchor', anchors[0]['class']
+    assert_equal '',       anchors[0].text
+  end
+
+  def check_h1 text, page
+      @wiki.write_page(page, :markdown, "# " + text)
+
+      page = @wiki.page(page)
+      assert_equal Gollum::Page, page.class
+      assert_equal '# ' + text, utf8(page.raw_data)
+
+      output = page.formatted_data
+
+      # UTF-8 headers should not be encoded.
+      assert_match /<h1>#{text}<a class="anchor" id="#{text}" href="##{text}"><\/a><\/h1>/,   output
+  end
+
+  test "create and read non-latin page with anchor" do
+    # href="#한글"
+    # href="#%ED%95%9C%EA%B8%80"
+    check_h1 '한글', '1'
+    # href="#Synhtèse"
+    # href="#Synht%C3%A8se"
+    check_h1 'Synhtèse', '2'
+  end
+
+  test "create and read non-latin page with anchor 2" do
+    @wiki.write_page("test", :markdown, "# \"La\" faune d'Édiacara")
+
+    page = @wiki.page("test")
+    assert_equal Gollum::Page, page.class
+    assert_equal "# \"La\" faune d'Édiacara", utf8(page.raw_data)
+
+    # markup.rb test: ', ", É
+    doc     = Nokogiri::HTML page.formatted_data
+    h1s     = doc / :h1
+    h1      = h1s.first
+    anchors = h1 / :a
+    assert_equal 1, h1s.size
+    assert_equal 1, anchors.size
+    assert_equal %q(#%22La%22-faune-d'Édiacara), anchors[0]['href']
+    assert_equal %q(%22La%22-faune-d'Édiacara),  anchors[0]['id']
+    assert_equal 'anchor',                 anchors[0]['class']
+    assert_equal '',                       anchors[0].text
   end
 
   test "unicode with existing format rules" do

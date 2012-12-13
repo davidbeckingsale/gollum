@@ -15,6 +15,68 @@ context "Frontend" do
     FileUtils.rm_rf(@path)
   end
 
+  test "urls transform unicode" do
+    header = '_Header'
+    footer = '_Footer'
+    sidebar = '_Sidebar'
+
+    # header, footer, and sidebar must be preserved
+    # or gollum will not recognize them
+    assert_equal header, header.to_url
+    assert_equal footer, footer.to_url
+    assert_equal sidebar, sidebar.to_url
+
+    # spaces are converted to dashes in URLs
+    # and in file names saved to disk
+    # urls are not case sensitive
+    assert_equal 'title-space', 'Title Space'.to_url
+
+    # ascii only file names prevent UTF8 issues
+    # when using git repos across operating systems
+    # as this test demonstrates, translation is not
+    # great
+    assert_equal 'm-plus-f', 'μ†ℱ'.to_url
+  end
+
+  test "utf-8 kcode" do
+    assert_equal 'μ†ℱ'.scan(/./), ["μ", "†", "ℱ"]
+  end
+
+
+  test "broken four space" do
+    page = 'utfh1'
+    text = %(
+    one
+    two
+    three
+    four
+)
+
+    @wiki.write_page(page, :markdown, text,
+                     { :name => 'user1', :email => 'user1' });
+
+    get page
+    # good html:
+    # <pre><code>one\ntwo\nthree\nfour\n</code></pre>\n
+    # broken html:
+    # <pre>\n  <code>one\ntwo\nthree\nfour\n</code>\n</pre>
+    assert_match /<pre><code>one\ntwo\nthree\nfour\n<\/code><\/pre>\n/m, last_response.body
+  end
+
+  test "UTF-8 headers href preserved" do
+    page = 'utfh1'
+    text = '한글'
+
+    # don't use h1 or it will be promoted to replace file name
+    # which doesn't generate a normal header link
+    @wiki.write_page(page, :markdown, '## ' + text,
+                     { :name => 'user1', :email => 'user1' });
+
+    get page
+
+    assert_match /<h2>#{text}<a class="anchor" id="#{text}" href="##{text}"><\/a><\/h2>/, last_response.body
+  end
+
   test "retain edit information" do
     page1 = 'page1'
     user1 = 'user1'
@@ -184,7 +246,7 @@ context "Frontend" do
     name = "A"
     post "/create", :content => 'abc', :page => name,
       :format => 'markdown', :message => 'def'
-    follow_redirect!
+
     assert last_response.ok?
 
     @wiki.clear_cache
@@ -260,6 +322,9 @@ context "Frontend" do
     page2 = @wiki.page('A')
     assert_equal page1.version.sha, page2.version.sha
   end
+=begin
+  # redirects are now handled by class MapGollum in bin/gollum
+  # they should be set in config.ru
 
   test "redirects from 'base_path' or 'base_path/' to 'base_path/Home'" do
     Precious::App.set(:wiki_options, {})
@@ -273,7 +338,11 @@ context "Frontend" do
     Precious::App.set(:wiki_options, { :base_path => '/wiki/' })
     get "/"
     assert_match "http://example.org/wiki/Home", last_response.headers['Location']
+
+    # Reset base path
+    Precious::App.set(:wiki_options, { :base_path => nil })
   end
+=end
   
   test "author details in session are used" do
     page1 = @wiki.page('A')
@@ -360,6 +429,31 @@ context "Frontend with lotr" do
     assert body.include?("Eye Of Sauron"), "/pages/Mordor/ should include the page 'Eye Of Sauron'"
   end
 
+  # base path requires 'map' in a config.ru to work correctly.
+  test "create pages within sub-directories using base path" do
+    Precious::App.set(:wiki_options, { :base_path => 'wiki' })
+    page = 'path'
+    post "/create", :content => '123', :page => page,
+      :path => 'Mordor', :format => 'markdown', :message => 'oooh, scary'
+    # should be wiki/Mordor/path
+    assert_equal 'http://example.org/Mordor/' + page, last_response.headers['Location']
+    get '/Mordor/' + page
+    assert_match /123/, last_response.body
+
+    # Reset base path
+    Precious::App.set(:wiki_options, { :base_path => nil })
+  end
+
+  test "create pages within sub-directories using page file dir" do
+    post "/create", :content => 'one two', :page => 'base',
+      :path => 'wiki/Mordor', :format => 'markdown', :message => 'oooh, scary'
+    assert_equal 'http://example.org/wiki/Mordor/base', last_response.headers['Location']
+    get "/wiki/Mordor/base"
+
+    assert_match /one two/, last_response.body
+  end
+
+
   test "create pages within sub-directories" do
     post "/create", :content => 'big smelly creatures', :page => 'Orc',
       :path => 'Mordor', :format => 'markdown', :message => 'oooh, scary'
@@ -377,6 +471,7 @@ context "Frontend with lotr" do
   test "edit pages within sub-directories" do
     post "/create", :content => 'big smelly creatures', :page => 'Orc',
       :path => 'Mordor', :format => 'markdown', :message => 'oooh, scary'
+
     assert_equal 'http://example.org/Mordor/orc', last_response.headers['Location']
 
     post "/edit/Mordor/Orc", :content => 'not so big smelly creatures',

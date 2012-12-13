@@ -1,3 +1,4 @@
+# ~*~ encoding: utf-8 ~*~
 require 'cgi'
 require 'sinatra'
 require 'gollum'
@@ -17,8 +18,7 @@ class String
   # _Header => header which causes errors
   def to_url
     return nil if self.nil?
-    return self if ['_Header', '_Footer', '_Sidebar'].include? self
-    upstream_to_url
+    upstream_to_url :exclude => ['_Header', '_Footer', '_Sidebar']
   end
 end
 
@@ -82,17 +82,13 @@ module Precious
 
     before do
       @base_url = url('/', false).chomp('/')
-      settings.wiki_options.merge!({ :base_path => @base_url }) unless settings.wiki_options.has_key? :base_path
+      # above will detect base_path when it's used with map in a config.ru
+      settings.wiki_options.merge!({ :base_path => @base_url })
+      @css = settings.wiki_options[:css]
     end
 
     get '/' do
-      redirect File.join(settings.wiki_options[:base_path].to_s, 'Home')
-    end
-
-    # Removes all slashes from the start of string.
-    def clean_url url
-      return url if url.nil?
-      url.gsub('%2F','/').gsub(/^\/+/,'')
+      redirect ::File.join(@base_url, 'Home')
     end
 
     # path is set to name if path is nil.
@@ -151,6 +147,7 @@ module Precious
       page_name = CGI.unescape(params[:page])
       wiki      = wiki_new
       page      = wiki.paged(page_name, path, exact = true)
+      return if page.nil?
       rename    = params[:rename].to_url if params[:rename]
       name      = rename || page.name
       committer = Gollum::Committer.new(wiki, commit_message)
@@ -192,17 +189,18 @@ module Precious
 
     post '/create' do
       name         = params[:page].to_url
-      path         = sanitize_empty_params(params[:path])
-      path = '' if path.nil?
+      path         = sanitize_empty_params(params[:path]) || ''
       format       = params[:format].intern
 
-      # write_page is not directory aware so use wiki_options to emulate dir support.
-      wiki_options = settings.wiki_options.merge({ :page_file_dir => path })
-      wiki         = Gollum::Wiki.new(settings.gollum_path, wiki_options)
+      # ensure pages are created in page_file_dir
+      page_dir = settings.wiki_options[:page_file_dir].to_s
+      path = clean_url(::File.join(page_dir, path)) unless path.start_with?(page_dir)
+
+      wiki = wiki_new
 
       begin
-        wiki.write_page(name, format, params[:content], commit_message)
-        redirect to("/#{clean_url(CGI.escape(::File.join(path,name)))}")
+        wiki.write_page(name, format, params[:content], commit_message, path)
+        redirect to("/#{clean_url(::File.join(path,name))}")
       rescue Gollum::DuplicatePageError => e
         @message = "Duplicate page: #{e.message}"
         mustache :error
@@ -238,6 +236,7 @@ module Precious
       @content = @page.formatted_data
       @toc_content = wiki.universal_toc ? @page.toc_data : nil
       @mathjax = wiki.mathjax
+      @h1_title = wiki.h1_title
       @editable = false
       mustache :page
     end
@@ -282,10 +281,6 @@ module Precious
       mustache :compare
     end
 
-    get %r{^/(javascript|css|images)} do
-      halt 404
-    end
-
     get %r{/(.+?)/([0-9a-f]{40})} do
       file_path = params[:captures][0]
       version   = params[:captures][1]
@@ -306,7 +301,8 @@ module Precious
     get '/search' do
       @query = params[:q]
       wiki = wiki_new
-      @results = wiki.search @query
+      # Sort wiki search results by count (desc) and then by name (asc)
+      @results = wiki.search(@query).sort{ |a, b| (a[:count] <=> b[:count]).nonzero? || b[:name] <=> a[:name] }.reverse
       @name = @query
       mustache :search
     end
@@ -321,13 +317,21 @@ module Precious
       wiki_options = settings.wiki_options.merge({ :page_file_dir => @path })
       wiki         = Gollum::Wiki.new(settings.gollum_path, wiki_options)
       @results     = wiki.pages
+      @results     += wiki.files if settings.wiki_options[:show_all]
       @ref         = wiki.ref
       mustache :pages
     end
 
     get '/fileview' do
-      wiki = Gollum::Wiki.new(settings.gollum_path, settings.wiki_options)
-      @results = Gollum::FileView.new(wiki.pages).render_files
+      wiki = wiki_new
+      options = settings.wiki_options
+      content = wiki.pages
+      # if showing all files include wiki.files
+      content += wiki.files if options[:show_all]
+
+      # must pass wiki_options to FileView
+      # --show-all and --collapse-tree can be set.
+      @results = Gollum::FileView.new(content, options).render_files
       @ref = wiki.ref
       mustache :file_view, { :layout => false }
     end
@@ -338,10 +342,11 @@ module Precious
 
     def show_page_or_file(fullpath)
       name         = extract_name(fullpath)
-      path         = extract_path(fullpath)
+      path         = extract_path(fullpath) || '/'
       wiki         = wiki_new
 
-      path = '/' if path.nil?
+      page_dir = settings.wiki_options[:page_file_dir].to_s
+      path = ::File.join(page_dir, path) unless path.start_with?(page_dir)
 
       if page = wiki.paged(name, path, exact = true)
         @page = page
@@ -350,6 +355,7 @@ module Precious
         @content = page.formatted_data
         @toc_content = wiki.universal_toc ? @page.toc_data : nil
         @mathjax = wiki.mathjax
+        @h1_title = wiki.h1_title
         mustache :page
       elsif file = wiki.file(fullpath)
         content_type file.mime_type
